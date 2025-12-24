@@ -31,13 +31,15 @@ def stream_audio(query: str):
 
     # Not cached → download once and cache while streaming
     cmd = [
-        "yt-dlp",
-        "-f", "bestaudio",
-        "-o", "-", 
-        "--quiet",
-        "--no-playlist",
-        f"ytsearch1:{query}"
-    ]
+    "yt-dlp",
+    "-f", "bestaudio",
+    "--extract-audio",
+    "--audio-format", "mp3",
+    "-o", "-",
+    "--no-playlist",
+    f"ytsearch1:{query}"
+]
+
 
     process = subprocess.Popen(
         cmd,
