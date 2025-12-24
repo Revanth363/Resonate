@@ -1,0 +1,18 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Cache
+audio_cache/
+
+# Sensitive files
+cookies.txt
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Other
+.DS_Store
