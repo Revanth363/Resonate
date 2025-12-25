@@ -71,7 +71,7 @@ async def get_status_checks():
     return [StatusCheck(**doc) for doc in docs]
 
 # =========================================================
-# 🎧 YOUTUBE AUDIO STREAMING (PRODUCTION SAFE)
+# 🎧 YOUTUBE AUDIO STREAMING (FINAL & STABLE)
 # =========================================================
 
 CACHE_DIR = "audio_cache"
@@ -102,7 +102,7 @@ async def stream_audio(query: str):
 
     path = cache_path(query)
 
-    # Serve cached if valid
+    # Serve cached file if valid
     if os.path.exists(path) and os.path.getsize(path) > 100_000:
         return FileResponse(
             path,
@@ -112,9 +112,9 @@ async def stream_audio(query: str):
 
     cmd = [
         "yt-dlp",
-        "--cookies", "cookies.txt",        # 🔥 REQUIRED
+        "--cookies", "cookies.txt",
         "--user-agent", "Mozilla/5.0",
-        "-f", "bestaudio",
+        "-f", "bestaudio/best",          # ✅ FIX HERE
         "-o", "-",
         "--no-playlist",
         "--quiet",
