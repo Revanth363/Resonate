@@ -124,30 +124,42 @@ async def stream_audio(query: str):
 
     cache_path = get_cache_path(query)
 
-    # If cached → serve with correct MIME type and range support
+    # Serve cached file if exists
     if os.path.exists(cache_path):
         return FileResponse(
             cache_path,
-            media_type="audio/webm",  # ← Correct MIME for Opus/WebM
+            media_type="audio/webm",
             headers={"Accept-Ranges": "bytes"}
         )
 
-    # Not cached → download from YouTube and cache while streaming
+    # Build yt-dlp command with extra options to help bypass common issues
     cmd = [
         "yt-dlp",
-        "-f", "bestaudio",           # Usually gives Opus in WebM (best quality)
-        "-o", "-", 
+        "-f", "bestaudio",
+        "-o", "-",
         "--quiet",
+        "--no-warnings",
         "--no-playlist",
+        "--retries", "5",
+        "--fragment-retries", "5",
+        "--extractor-retries", "3",
+        "--sleep-requests", "1",      # Slow down requests a bit
+        "--sleep-interval", "1",      # Avoid aggressive rate-limiting
+        "--max-sleep-interval", "5",
+        "--force-ipv4",               # Sometimes helps with cloud networking
         f"ytsearch1:{query}"
     ]
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        bufsize=1024 * 1024
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,   # Capture errors for logging
+            bufsize=1024 * 1024
+        )
+    except FileNotFoundError:
+        logger.error("yt-dlp executable not found!")
+        raise HTTPException(status_code=500, detail="Audio service unavailable")
 
     async def stream_and_cache():
         try:
@@ -158,24 +170,43 @@ async def stream_audio(query: str):
                         break
                     f.write(chunk)
                     yield chunk
-            process.wait()
+
+            process.wait(timeout=90)
+            stderr_output = process.stderr.read().decode(errors="ignore").strip()
+
             if process.returncode != 0:
-                raise Exception("yt-dlp failed")
-        except Exception as e:
-            logger.error(f"Stream/cache error: {e}")
+                error_msg = stderr_output or f"yt-dlp exited with code {process.returncode}"
+                logger.error(f"yt-dlp failed for query '{query}': {error_msg}")
+
+                # Clean up partial/invalid cache file
+                if os.path.exists(cache_path):
+                    os.remove(cache_path)
+
+                # DO NOT raise exception here — response already started
+                # Just stop yielding → browser gets incomplete audio + connection close
+                return
+
+            logger.info(f"Successfully streamed and cached: {query}")
+
+        except subprocess.TimeoutExpired:
+            process.kill()
+            logger.error("yt-dlp timed out")
             if os.path.exists(cache_path):
                 os.remove(cache_path)
-            raise HTTPException(status_code=500, detail="Stream failed")
+        except Exception as e:
+            logger.error(f"Unexpected error during streaming: {e}")
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
 
     return StreamingResponse(
         stream_and_cache(),
-        media_type="audio/webm",  # ← Correct MIME type
+        media_type="audio/webm",
         headers={
             "Accept-Ranges": "bytes",
-            "Content-Disposition": "inline"
+            "Content-Disposition": "inline",
         }
-    )
-
+            )
+    
 # -------- Spotify Routes --------
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(playlists.router, prefix="/playlists", tags=["playlists"])
