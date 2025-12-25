@@ -12,7 +12,7 @@ import os
 import logging
 import subprocess
 import hashlib
-import time  # ← Added for cleanup
+import time
 
 # -------- Import Spotify Routes --------
 from routes import auth, playlists, search, library, playback
@@ -42,6 +42,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://resonate-eight.vercel.app",
+        # Add your production frontend URL here when deploying
+        # "https://your-production-domain.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -84,12 +86,13 @@ CACHE_DIR = "audio_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_cache_path(query: str) -> str:
+    """Generate cache filename using MD5 hash + .webm extension"""
     query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()
-    return os.path.join(CACHE_DIR, f"{query_hash}.mp3")
+    return os.path.join(CACHE_DIR, f"{query_hash}.webm")  # ← Correct extension
 
-# -------- Cache Cleanup Function (Keep files for 4 days only) --------
+# -------- Cache Cleanup Function --------
 def cleanup_old_cache(max_age_days=4):
-    """Delete cached audio files older than max_age_days (4 days)"""
+    """Delete cached audio files older than max_age_days"""
     if not os.path.exists(CACHE_DIR):
         return
     
@@ -121,18 +124,18 @@ async def stream_audio(query: str):
 
     cache_path = get_cache_path(query)
 
-    # If cached → serve file with range support (perfect seeking!)
+    # If cached → serve with correct MIME type and range support
     if os.path.exists(cache_path):
         return FileResponse(
             cache_path,
-            media_type="audio/mpeg",
+            media_type="audio/webm",  # ← Correct MIME for Opus/WebM
             headers={"Accept-Ranges": "bytes"}
         )
 
-    # Not cached → download and cache while streaming
+    # Not cached → download from YouTube and cache while streaming
     cmd = [
         "yt-dlp",
-        "-f", "bestaudio",
+        "-f", "bestaudio",           # Usually gives Opus in WebM (best quality)
         "-o", "-", 
         "--quiet",
         "--no-playlist",
@@ -166,7 +169,7 @@ async def stream_audio(query: str):
 
     return StreamingResponse(
         stream_and_cache(),
-        media_type="audio/mpeg",
+        media_type="audio/webm",  # ← Correct MIME type
         headers={
             "Accept-Ranges": "bytes",
             "Content-Disposition": "inline"
