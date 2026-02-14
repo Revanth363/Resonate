@@ -1,5 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -14,6 +14,7 @@ import subprocess
 import hashlib
 import time
 import re
+import asyncio
 
 # -------- Import Spotify Routes --------
 from routes import auth, playlists, search, library, playback
@@ -63,7 +64,7 @@ async def get_status_checks():
     return [StatusCheck(**doc) for doc in docs]
 
 # ====================================================================
-# YOUTUBE AUDIO STREAMING WITH CACHING
+# YOUTUBE AUDIO STREAMING WITH CACHING + RANGE SUPPORT
 # ====================================================================
 
 CACHE_DIR = "audio_cache"
@@ -95,7 +96,7 @@ async def on_startup():
     logger.info("Server started - old cache files cleaned (older than 4 days)")
 
 @api_router.get("/stream")
-async def stream_audio(query: str):
+async def stream_audio(query: str, request: Request):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query required")
 
@@ -103,14 +104,73 @@ async def stream_audio(query: str):
 
     cache_path = get_cache_path(query)
 
+    # ========================
+    # CACHE HIT - FULL RANGE SUPPORT
+    # ========================
     if os.path.exists(cache_path):
-        logger.info(f"Cache hit - serving: {cache_path}")
+        logger.info(f"Cache hit - serving with range support: {cache_path}")
+
+        file_size = os.path.getsize(cache_path)
+        range_header = request.headers.get("Range")
+
+        if range_header:
+            # Parse Range header: bytes=start-end
+            range_str = range_header.replace("bytes=", "")
+            start_str, end_str = range_str.split("-", 1)
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+
+            if start >= file_size or end >= file_size or start > end:
+                return Response(
+                    status_code=416,
+                    headers={"Content-Range": f"bytes */{file_size}"}
+                )
+
+            length = end - start + 1
+
+            def range_generator():
+                with open(cache_path, "rb") as f:
+                    f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk_size = min(65536, remaining)
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                        remaining -= len(chunk)
+
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Content-Type": "audio/mpeg",
+                "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
+                "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+                "Cache-Control": "no-cache",
+            }
+
+            return StreamingResponse(
+                range_generator(),
+                status_code=206,
+                media_type="audio/mpeg",
+                headers=headers
+            )
+
+        # No range requested → full file
         return FileResponse(
             cache_path,
             media_type="audio/mpeg",
-            headers={"Accept-Ranges": "bytes"}
+            headers={
+                "Accept-Ranges": "bytes",
+                "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
+                "Cache-Control": "no-cache",
+            }
         )
 
+    # ========================
+    # NO CACHE - STREAM FROM YT-DLP + CACHE + RANGE (partial support)
+    # ========================
     clean_query = re.sub(r"['’\"]", "", query)
     clean_query = re.sub(r"[()[\]{}]", "", clean_query)
     clean_query = re.sub(r"\s+", " ", clean_query)
@@ -123,45 +183,71 @@ async def stream_audio(query: str):
 
     cmd = [
         "yt-dlp",
-        "-f", "bestaudio",
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "192K",
         "-o", "-",
         "--quiet",
         "--no-playlist",
+        "--no-warnings",
         search_query
     ]
 
     logger.info(f"Launching yt-dlp: {' '.join(cmd)}")
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        bufsize=1024 * 1024
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
+
+    async def log_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            logger.error(f"yt-dlp stderr: {line.decode().strip()}")
+
+    stderr_task = asyncio.create_task(log_stderr())
 
     async def stream_and_cache():
         try:
             with open(cache_path, "wb") as f:
                 while True:
-                    chunk = process.stdout.read(65536)
+                    chunk = await process.stdout.read(65536)
                     if not chunk:
                         break
                     f.write(chunk)
                     yield chunk
-            process.wait()
+
+            await process.wait()
+            await stderr_task
+
+            if process.returncode != 0:
+                logger.error(f"yt-dlp exited with code {process.returncode}")
+                if os.path.exists(cache_path):
+                    os.remove(cache_path)
+                raise HTTPException(status_code=500, detail="yt-dlp failed to extract audio")
+
         except Exception as e:
             logger.error(f"Stream/cache error: {e}")
             if os.path.exists(cache_path):
                 os.remove(cache_path)
             raise HTTPException(status_code=500, detail="Stream failed")
 
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": "audio/mpeg",
+        "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
+        "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length",
+        "Cache-Control": "no-cache",
+    }
+
     return StreamingResponse(
         stream_and_cache(),
         media_type="audio/mpeg",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": "inline"
-        }
+        headers=headers
     )
 
 # -------- Spotify Routes --------
