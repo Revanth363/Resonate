@@ -28,4 +28,4 @@ EXPOSE 8000
 
 # Run with uvicorn (production style: workers, host 0.0.0.0)
 # Adjust --workers based on your plan (1-2 for free tiers)
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "${PORT:-8000}", "--workers", "1"]
