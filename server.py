@@ -12,7 +12,8 @@ import os
 import logging
 import subprocess
 import hashlib
-import time  # ← Added for cleanup
+import time
+import re  # ← added for query cleaning
 
 # -------- Import Spotify Routes --------
 from routes import auth, playlists, search, library, playback
@@ -42,6 +43,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://resonate-eight.vercel.app",
+        "http://10.0.244.248:5173",
+        "https://salty-moments-tickle.loca.lt",
+        "https://oliver-sufferable-herlinda.ngrok-free.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -77,7 +81,7 @@ async def get_status_checks():
     return [StatusCheck(**doc) for doc in docs]
 
 # ====================================================================
-# 🎧 YOUTUBE AUDIO STREAMING WITH CACHING & FULL SEEK SUPPORT
+# 🎧 YOUTUBE AUDIO STREAMING WITH CACHING (LOCALHOST - PERFECT SEEKING)
 # ====================================================================
 
 CACHE_DIR = "audio_cache"
@@ -87,12 +91,10 @@ def get_cache_path(query: str) -> str:
     query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()
     return os.path.join(CACHE_DIR, f"{query_hash}.mp3")
 
-# -------- Cache Cleanup Function (Keep files for 4 days only) --------
+# Cleanup old cache on startup (4 days)
 def cleanup_old_cache(max_age_days=4):
-    """Delete cached audio files older than max_age_days (4 days)"""
     if not os.path.exists(CACHE_DIR):
         return
-    
     cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
     deleted_count = 0
     for filename in os.listdir(CACHE_DIR):
@@ -105,39 +107,53 @@ def cleanup_old_cache(max_age_days=4):
                 except Exception as e:
                     logger.warning(f"Failed to delete {file_path}: {e}")
     if deleted_count > 0:
-        logger.info(f"Cleaned up {deleted_count} cache files older than {max_age_days} days")
+        logger.info(f"Cleaned up {deleted_count} old cache files")
 
-# Run cleanup on server startup
 @app.on_event("startup")
 async def on_startup():
     cleanup_old_cache(4)
     logger.info("Server started - old cache files cleaned (older than 4 days)")
 
-# -------- Stream Endpoint --------
 @api_router.get("/stream")
 async def stream_audio(query: str):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query required")
 
+    logger.info(f"Stream request received: {query}")  # ← now you will see this in terminal
+
     cache_path = get_cache_path(query)
 
-    # If cached → serve file with range support (perfect seeking!)
+    # Serve cached file if exists (perfect seeking on localhost)
     if os.path.exists(cache_path):
+        logger.info(f"Cache hit - serving: {cache_path}")
         return FileResponse(
             cache_path,
             media_type="audio/mpeg",
             headers={"Accept-Ranges": "bytes"}
         )
 
-    # Not cached → download and cache while streaming
+    # Clean the query to improve search success
+    clean_query = re.sub(r"['’\"]", "", query)           # remove apostrophes/quotes
+    clean_query = re.sub(r"[()[\]{}]", "", clean_query)  # remove brackets
+    clean_query = re.sub(r"\s+", " ", clean_query)       # normalize spaces
+    clean_query = clean_query.strip()
+
+    search_query = f"ytsearch1:{clean_query}"
+
+    logger.info(f"Cleaned query: {clean_query}")
+    logger.info(f"Using ytsearch1: {search_query}")
+
+    # Download and cache while streaming
     cmd = [
         "yt-dlp",
         "-f", "bestaudio",
-        "-o", "-", 
+        "-o", "-",
         "--quiet",
-        "--no-playlist",
-        f"ytsearch1:{query}"
+        "--no-playlist",              # ← only one song
+        search_query                  # ← ytsearch1 + cleaned query
     ]
+
+    logger.info(f"Launching yt-dlp: {' '.join(cmd)}")
 
     process = subprocess.Popen(
         cmd,
@@ -156,8 +172,6 @@ async def stream_audio(query: str):
                     f.write(chunk)
                     yield chunk
             process.wait()
-            if process.returncode != 0:
-                raise Exception("yt-dlp failed")
         except Exception as e:
             logger.error(f"Stream/cache error: {e}")
             if os.path.exists(cache_path):

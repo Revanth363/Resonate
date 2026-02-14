@@ -1,7 +1,10 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from services.spotify_service import SpotifyService
 import logging
+import secrets
+import time
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -13,51 +16,109 @@ class RefreshTokenRequest(BaseModel):
 
 
 @router.get("/login")
-async def spotify_login():
-    """Get Spotify authorization URL"""
+async def spotify_login(
+    request: Request,
+    state: Optional[str] = Query(None),
+):
+    """
+    Generate Spotify authorization URL with optional state parameter.
+    If no state is provided, a random one is generated and returned.
+    """
     try:
-        auth_url = spotify_service.get_authorization_url()
-        return {"auth_url": auth_url}
+        # Generate secure random state if not provided (CSRF protection)
+        if not state:
+            state = secrets.token_urlsafe(32)
+
+        # You can store state in session/cookie if you want to verify it later
+        # For simplicity here we just pass it back to frontend
+        # In production: store in session or signed cookie
+
+        auth_url = spotify_service.get_authorization_url(state=state)
+
+        return {
+            "auth_url": auth_url,
+            "state": state,  # frontend should keep this and send back in callback
+        }
     except Exception as e:
-        logger.error(f"Error getting auth URL: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error generating auth URL: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate login URL")
 
 
 @router.get("/callback")
-async def spotify_callback(code: str = Query(...)):
-    """Handle Spotify OAuth callback"""
+async def spotify_callback(
+    code: str = Query(...),
+    state: Optional[str] = Query(None),
+    # Optional: if you stored state in cookie/session, you can compare here
+):
+    """
+    Handle Spotify OAuth callback.
+    Receives code and optional state.
+    """
     try:
+        # In production: verify state here if you stored it
+        # Example:
+        # if state != request.session.get("oauth_state"):
+        #     raise HTTPException(400, "Invalid state parameter")
+
         token_info = spotify_service.get_access_token(code)
-        return {
-            "access_token": token_info['access_token'],
-            "refresh_token": token_info['refresh_token'],
-            "expires_in": token_info['expires_in']
+
+        # Calculate expiration time for frontend convenience
+        expires_at = int(time.time()) + token_info["expires_in"]
+
+        response_data = {
+            "access_token": token_info["access_token"],
+            "expires_in": token_info["expires_in"],
+            "expires_at": expires_at,  # unix timestamp
+            "token_type": token_info.get("token_type", "Bearer"),
+            "scope": token_info.get("scope", ""),
         }
+
+        # Include refresh_token only if present (first login usually has it)
+        if "refresh_token" in token_info:
+            response_data["refresh_token"] = token_info["refresh_token"]
+
+        return response_data
+
     except Exception as e:
-        logger.error(f"Error in callback: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to get access token: {str(e)}")
+        logger.error(f"Callback error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to exchange code for token: {str(e)}"
+        )
 
 
 @router.post("/refresh")
 async def refresh_token(request: RefreshTokenRequest):
-    """Refresh Spotify access token"""
+    """Refresh Spotify access token using refresh token"""
     try:
         token_info = spotify_service.refresh_access_token(request.refresh_token)
+
+        expires_at = int(time.time()) + token_info["expires_in"]
+
         return {
-            "access_token": token_info['access_token'],
-            "expires_in": token_info['expires_in']
+            "access_token": token_info["access_token"],
+            "expires_in": token_info["expires_in"],
+            "expires_at": expires_at,
+            "token_type": token_info.get("token_type", "Bearer"),
+            "scope": token_info.get("scope", ""),
         }
     except Exception as e:
-        logger.error(f"Error refreshing token: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to refresh token: {str(e)}")
+        logger.error(f"Token refresh failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to refresh token: {str(e)}"
+        )
 
 
 @router.get("/me")
 async def get_current_user(access_token: str = Query(...)):
-    """Get current user profile"""
+    """Get current authenticated user's profile"""
     try:
         user_profile = spotify_service.get_user_profile(access_token)
         return user_profile
     except Exception as e:
-        logger.error(f"Error getting user profile: {e}")
-        raise HTTPException(status_code=401, detail=f"Failed to get user profile: {str(e)}")
+        logger.error(f"Failed to get user profile: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=401,
+            detail=f"Authentication failed or token invalid: {str(e)}"
+        )

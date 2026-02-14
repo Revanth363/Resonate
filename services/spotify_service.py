@@ -12,17 +12,17 @@ class SpotifyService:
         self.redirect_uri = os.environ.get("SPOTIPY_REDIRECT_URI")
 
         self.scope = (
-            "user-read-private "
-            "user-read-email "
-            "user-library-read "
-            "playlist-read-private "
-            "playlist-read-collaborative "
-            "user-read-playback-state "
-            "user-modify-playback-state "
-            "streaming "
-            "user-read-recently-played"
-        )
-
+    "user-read-private "
+    "user-read-email "
+    "user-library-read "
+    "user-library-modify "          # ← ADD THIS
+    "playlist-read-private "
+    "playlist-read-collaborative "
+    "user-read-playback-state "
+    "user-modify-playback-state "
+    "streaming "
+    "user-read-recently-played"
+)
     # ---------------- AUTH ---------------- #
 
     def get_auth_manager(self, cache_handler=None):
@@ -35,9 +35,10 @@ class SpotifyService:
             show_dialog=True,
         )
 
-    def get_authorization_url(self):
+    def get_authorization_url(self, state: str):
         auth_manager = self.get_auth_manager()
-        return auth_manager.get_authorize_url()
+        return auth_manager.get_authorize_url(state=state)
+
 
     def get_access_token(self, code: str):
         auth_manager = self.get_auth_manager()
