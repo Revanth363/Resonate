@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
+from urllib.parse import urlencode
 from pydantic import BaseModel
 from services.spotify_service import SpotifyService
 import logging
@@ -55,43 +56,31 @@ async def spotify_callback(
     Receives code and optional state.
     """
     try:
-        # Optional: verify state here if you implement CSRF protection later
-        # Example:
-        # if state != request.session.get("oauth_state"):
-        #     raise HTTPException(400, "Invalid state parameter")
-
         token_info = spotify_service.get_access_token(code)
 
-        # Calculate expiration time for frontend convenience
         expires_at = int(time.time()) + token_info["expires_in"]
 
-        # =============================================
-        #   CHANGED: Redirect to frontend instead of returning JSON
-        # =============================================
-        frontend_url = "https://resonate-omega.vercel.app/"
+        # Pass tokens via URL params so frontend can store them
+        params = {
+            "access_token": token_info["access_token"],
+            "expires_in": str(token_info["expires_in"]),
+            "expires_at": str(expires_at),
+            "token_type": token_info.get("token_type", "Bearer"),
+            "scope": token_info.get("scope", ""),
+        }
+        if "refresh_token" in token_info:
+            params["refresh_token"] = token_info["refresh_token"]
 
-        # Optional: add query params if you want frontend to know login succeeded
-        # frontend_url += "?login=success"
+        query_string = urlencode(params)
+        frontend_callback_url = f"https://resonate-omega.vercel.app/callback?{query_string}"
 
-        # Optional: if you want to pass tokens via URL (temporary, less secure)
-        # from urllib.parse import urlencode
-        # params = {
-        #     "access_token": token_info["access_token"],
-        #     "expires_in": token_info["expires_in"],
-        #     "expires_at": expires_at,
-        # }
-        # if "refresh_token" in token_info:
-        #     params["refresh_token"] = token_info["refresh_token"]
-        # frontend_url += "?" + urlencode(params)
-
-        return RedirectResponse(url=frontend_url)
+        return RedirectResponse(url=frontend_callback_url)
 
     except Exception as e:
         logger.error(f"Callback error: {e}", exc_info=True)
-        # Redirect with error info so frontend can display a message
-        error_url = f"https://resonate-omega.vercel.app/?error=login_failed&message={str(e)}"
+        error_url = f"https://resonate-omega.vercel.app/login?error=login_failed&message={str(e)}"
         return RedirectResponse(url=error_url)
-
+    
 
 @router.post("/refresh")
 async def refresh_token(request: RefreshTokenRequest):
