@@ -19,6 +19,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the rest of your backend code
 COPY . .
 
+COPY cookies.txt /app/cookies.txt
+
 # Create audio_cache folder (will be ephemeral unless you mount volume)
 RUN mkdir -p /app/audio_cache && \
     chmod -R 777 /app/audio_cache  # permissive for uvicorn user

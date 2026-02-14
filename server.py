@@ -183,6 +183,7 @@ async def stream_audio(query: str, request: Request):
 
     cmd = [
         "yt-dlp",
+        "--cookies", "/app/cookies.txt",
         "-f", "bestaudio[ext=m4a]/bestaudio/best",
         "--extract-audio",
         "--audio-format", "mp3",
