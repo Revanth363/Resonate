@@ -13,7 +13,7 @@ import logging
 import subprocess
 import hashlib
 import time
-import re  # ← added for query cleaning
+import re
 
 # -------- Import Spotify Routes --------
 from routes import auth, playlists, search, library, playback
@@ -33,24 +33,6 @@ db = client[os.environ["DB_NAME"]]
 
 # -------- FastAPI App --------
 app = FastAPI(title="Spotify Clone API", version="1.0.0")
-
-# -------- CORS --------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://resonate-omega.vercel.app/",
-        "http://10.0.244.248:5173",
-        "https://salty-moments-tickle.loca.lt",
-        "https://oliver-sufferable-herlinda.ngrok-free.dev",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # -------- API Router --------
 api_router = APIRouter(prefix="/api")
@@ -81,7 +63,7 @@ async def get_status_checks():
     return [StatusCheck(**doc) for doc in docs]
 
 # ====================================================================
-# 🎧 YOUTUBE AUDIO STREAMING WITH CACHING (LOCALHOST - PERFECT SEEKING)
+# YOUTUBE AUDIO STREAMING WITH CACHING
 # ====================================================================
 
 CACHE_DIR = "audio_cache"
@@ -91,7 +73,6 @@ def get_cache_path(query: str) -> str:
     query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()
     return os.path.join(CACHE_DIR, f"{query_hash}.mp3")
 
-# Cleanup old cache on startup (4 days)
 def cleanup_old_cache(max_age_days=4):
     if not os.path.exists(CACHE_DIR):
         return
@@ -99,13 +80,12 @@ def cleanup_old_cache(max_age_days=4):
     deleted_count = 0
     for filename in os.listdir(CACHE_DIR):
         file_path = os.path.join(CACHE_DIR, filename)
-        if os.path.isfile(file_path):
-            if os.path.getmtime(file_path) < cutoff_time:
-                try:
-                    os.remove(file_path)
-                    deleted_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to delete {file_path}: {e}")
+        if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to delete {file_path}: {e}")
     if deleted_count > 0:
         logger.info(f"Cleaned up {deleted_count} old cache files")
 
@@ -119,11 +99,10 @@ async def stream_audio(query: str):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query required")
 
-    logger.info(f"Stream request received: {query}")  # ← now you will see this in terminal
+    logger.info(f"Stream request received: {query}")
 
     cache_path = get_cache_path(query)
 
-    # Serve cached file if exists (perfect seeking on localhost)
     if os.path.exists(cache_path):
         logger.info(f"Cache hit - serving: {cache_path}")
         return FileResponse(
@@ -132,10 +111,9 @@ async def stream_audio(query: str):
             headers={"Accept-Ranges": "bytes"}
         )
 
-    # Clean the query to improve search success
-    clean_query = re.sub(r"['’\"]", "", query)           # remove apostrophes/quotes
-    clean_query = re.sub(r"[()[\]{}]", "", clean_query)  # remove brackets
-    clean_query = re.sub(r"\s+", " ", clean_query)       # normalize spaces
+    clean_query = re.sub(r"['’\"]", "", query)
+    clean_query = re.sub(r"[()[\]{}]", "", clean_query)
+    clean_query = re.sub(r"\s+", " ", clean_query)
     clean_query = clean_query.strip()
 
     search_query = f"ytsearch1:{clean_query}"
@@ -143,14 +121,13 @@ async def stream_audio(query: str):
     logger.info(f"Cleaned query: {clean_query}")
     logger.info(f"Using ytsearch1: {search_query}")
 
-    # Download and cache while streaming
     cmd = [
         "yt-dlp",
         "-f", "bestaudio",
         "-o", "-",
         "--quiet",
-        "--no-playlist",              # ← only one song
-        search_query                  # ← ytsearch1 + cleaned query
+        "--no-playlist",
+        search_query
     ]
 
     logger.info(f"Launching yt-dlp: {' '.join(cmd)}")
@@ -196,3 +173,15 @@ api_router.include_router(playback.router, prefix="/playback", tags=["playback"]
 
 # -------- Attach Router --------
 app.include_router(api_router)
+
+# -------- CORS (must be last!) --------
+cors_str = os.getenv("CORS_ORIGINS", "https://resonate-omega.vercel.app,http://localhost:5173,http://127.0.0.1:5173")
+origins = [origin.strip() for origin in cors_str.split(",") if origin.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
