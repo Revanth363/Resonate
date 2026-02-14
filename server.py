@@ -42,7 +42,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://resonate-eight.vercel.app",
+        "http://resonate-omega.vercel.app/",
         "http://10.0.244.248:5173",
         "https://salty-moments-tickle.loca.lt",
         "https://oliver-sufferable-herlinda.ngrok-free.dev",
