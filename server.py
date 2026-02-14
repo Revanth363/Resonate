@@ -169,16 +169,18 @@ async def stream_audio(query: str, request: Request):
     cmd = [
         "yt-dlp",
         "--cookies", "/app/cookies.txt",
-        "-f", "bestaudio/best",
+        "-f", "bestaudio* / bestvideo+bestaudio / best",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "192K",
+        "--remux-video", "mp3",
         "-o", "-",
         "--quiet",
         "--no-playlist",
         "--no-warnings",
         "--ignore-errors",
-        "--prefer-ffmpeg",
+        "--no-check-certificate",
+        "--add-header", "Referer:https://music.youtube.com/",
         search_query
     ]
 
