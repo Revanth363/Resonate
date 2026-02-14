@@ -104,27 +104,20 @@ async def stream_audio(query: str, request: Request):
 
     cache_path = get_cache_path(query)
 
-    # ========================
-    # CACHE HIT - FULL RANGE SUPPORT
-    # ========================
+    # Cache hit - full range support
     if os.path.exists(cache_path):
         logger.info(f"Cache hit - serving with range support: {cache_path}")
-
         file_size = os.path.getsize(cache_path)
         range_header = request.headers.get("Range")
 
         if range_header:
-            # Parse Range header: bytes=start-end
             range_str = range_header.replace("bytes=", "")
             start_str, end_str = range_str.split("-", 1)
             start = int(start_str) if start_str else 0
             end = int(end_str) if end_str else file_size - 1
 
             if start >= file_size or end >= file_size or start > end:
-                return Response(
-                    status_code=416,
-                    headers={"Content-Range": f"bytes */{file_size}"}
-                )
+                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
 
             length = end - start + 1
 
@@ -150,14 +143,8 @@ async def stream_audio(query: str, request: Request):
                 "Cache-Control": "no-cache",
             }
 
-            return StreamingResponse(
-                range_generator(),
-                status_code=206,
-                media_type="audio/mpeg",
-                headers=headers
-            )
+            return StreamingResponse(range_generator(), status_code=206, media_type="audio/mpeg", headers=headers)
 
-        # No range requested → full file
         return FileResponse(
             cache_path,
             media_type="audio/mpeg",
@@ -168,9 +155,7 @@ async def stream_audio(query: str, request: Request):
             }
         )
 
-    # ========================
-    # NO CACHE - STREAM FROM YT-DLP + CACHE + RANGE (partial support)
-    # ========================
+    # No cache - stream from yt-dlp + cache
     clean_query = re.sub(r"['’\"]", "", query)
     clean_query = re.sub(r"[()[\]{}]", "", clean_query)
     clean_query = re.sub(r"\s+", " ", clean_query)
@@ -184,7 +169,7 @@ async def stream_audio(query: str, request: Request):
     cmd = [
         "yt-dlp",
         "--cookies", "/app/cookies.txt",
-        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        "-f", "bestaudio/best",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "192K",
@@ -192,6 +177,8 @@ async def stream_audio(query: str, request: Request):
         "--quiet",
         "--no-playlist",
         "--no-warnings",
+        "--ignore-errors",
+        "--prefer-ffmpeg",
         search_query
     ]
 
