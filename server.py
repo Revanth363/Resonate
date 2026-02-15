@@ -167,22 +167,20 @@ async def stream_audio(query: str, request: Request):
     logger.info(f"Using ytsearch1: {search_query}")
 
     cmd = [
-        "yt-dlp",
-        "--cookies", "/app/cookies.txt",
-        "-f", "bestaudio/bestvideo+bestaudio/best",
-        "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "192K",
-        "--remux-video", "mp3",
-        "-o", "-",
-        "--quiet",
-        "--no-playlist",
-        "--no-warnings",
-        "--ignore-errors",
-        "--no-check-certificate",
-        "--add-header", "Referer:https://music.youtube.com/",
-        search_query
-    ]
+    "yt-dlp",
+    "--cookies", "/app/cookies.txt",
+    "-f", "bestaudio/best",
+    "--extractor-args", "youtube:player_client=newpipe,web_music",
+    "--extract-audio",
+    "--audio-format", "mp3",
+    "--audio-quality", "192K",
+    "-o", "-",
+    "--quiet",
+    "--no-playlist",
+    "--no-warnings",
+    "--ignore-errors",
+    search_query
+]
 
     logger.info(f"Launching yt-dlp: {' '.join(cmd)}")
 
