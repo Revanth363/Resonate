@@ -10,7 +10,6 @@ from datetime import datetime
 import uuid
 import os
 import logging
-import subprocess
 import hashlib
 import time
 import re
@@ -38,7 +37,7 @@ app = FastAPI(title="Spotify Clone API", version="1.0.0")
 # -------- API Router --------
 api_router = APIRouter(prefix="/api")
 
-# -------- Health / Status Models --------
+# -------- Health Models --------
 class StatusCheck(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_name: str
@@ -64,7 +63,7 @@ async def get_status_checks():
     return [StatusCheck(**doc) for doc in docs]
 
 # ====================================================================
-# YOUTUBE AUDIO STREAMING WITH CACHING + RANGE SUPPORT
+# AUDIO STREAMING WITH CACHE + RANGE SUPPORT
 # ====================================================================
 
 CACHE_DIR = "audio_cache"
@@ -72,41 +71,53 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_cache_path(query: str) -> str:
     query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()
-    return os.path.join(CACHE_DIR, f"{query_hash}.mp3")
+    return os.path.join(CACHE_DIR, f"{query_hash}.audio")
 
 def cleanup_old_cache(max_age_days=4):
-    if not os.path.exists(CACHE_DIR):
-        return
     cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
-    deleted_count = 0
     for filename in os.listdir(CACHE_DIR):
         file_path = os.path.join(CACHE_DIR, filename)
         if os.path.isfile(file_path) and os.path.getmtime(file_path) < cutoff_time:
             try:
                 os.remove(file_path)
-                deleted_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to delete {file_path}: {e}")
-    if deleted_count > 0:
-        logger.info(f"Cleaned up {deleted_count} old cache files")
+            except:
+                pass
 
 @app.on_event("startup")
 async def on_startup():
     cleanup_old_cache(4)
-    logger.info("Server started - old cache files cleaned (older than 4 days)")
+    logger.info("Server started - old cache cleaned")
 
+# ========================= DEBUG ROUTE =========================
+@api_router.get("/debug-formats")
+async def debug_formats():
+    test_url = "https://youtube.com/watch?v=Q4zUoiJE478"
+
+    cmd = ["yt-dlp", "-F", test_url]
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    stdout, stderr = await process.communicate()
+
+    return {
+        "formats": stdout.decode(),
+        "errors": stderr.decode()
+    }
+
+# ========================= STREAM ROUTE =========================
 @api_router.get("/stream")
 async def stream_audio(query: str, request: Request):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query required")
 
-    logger.info(f"Stream request received: {query}")
-
     cache_path = get_cache_path(query)
 
-    # Cache hit - full range support
+    # ===== CACHE HIT =====
     if os.path.exists(cache_path):
-        logger.info(f"Cache hit - serving with range support: {cache_path}")
         file_size = os.path.getsize(cache_path)
         range_header = request.headers.get("Range")
 
@@ -126,78 +137,45 @@ async def stream_audio(query: str, request: Request):
                     f.seek(start)
                     remaining = length
                     while remaining > 0:
-                        chunk_size = min(65536, remaining)
-                        chunk = f.read(chunk_size)
+                        chunk = f.read(min(65536, remaining))
                         if not chunk:
                             break
                         yield chunk
                         remaining -= len(chunk)
 
-            headers = {
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(length),
-                "Content-Type": "audio/mpeg",
-                "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
-                "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
-                "Cache-Control": "no-cache",
-            }
+            return StreamingResponse(
+                range_generator(),
+                status_code=206,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(length),
+                }
+            )
 
-            return StreamingResponse(range_generator(), status_code=206, media_type="audio/mpeg", headers=headers)
+        return FileResponse(cache_path, media_type="audio/mpeg")
 
-        return FileResponse(
-            cache_path,
-            media_type="audio/mpeg",
-            headers={
-                "Accept-Ranges": "bytes",
-                "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
-                "Cache-Control": "no-cache",
-            }
-        )
-
-    # No cache - stream from yt-dlp + cache
-    clean_query = re.sub(r"['’\"]", "", query)
-    clean_query = re.sub(r"[()[\]{}]", "", clean_query)
-    clean_query = re.sub(r"\s+", " ", clean_query)
-    clean_query = clean_query.strip()
-
+    # ===== CACHE MISS =====
+    clean_query = re.sub(r"[\"'’()[\]{}]", "", query).strip()
     search_query = f"ytsearch1:{clean_query}"
 
-    logger.info(f"Cleaned query: {clean_query}")
-    logger.info(f"Using ytsearch1: {search_query}")
-
     cmd = [
-    "yt-dlp",
-    "--cookies", "/app/cookies.txt",
-    "-f", "bestaudio/best",
-    "--extractor-args", "youtube:player_client=newpipe,web_music",
-    "--extract-audio",
-    "--audio-format", "mp3",
-    "--audio-quality", "192K",
-    "-o", "-",
-    "--quiet",
-    "--no-playlist",
-    "--no-warnings",
-    "--ignore-errors",
-    search_query
-]
-
-    logger.info(f"Launching yt-dlp: {' '.join(cmd)}")
+        "yt-dlp",
+        "--cookies", "/app/cookies.txt",
+        "-f", "ba",
+        "--extractor-args", "youtube:player_client=web",
+        "-o", "-",
+        "--quiet",
+        "--no-playlist",
+        search_query
+    ]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
-
-    async def log_stderr():
-        while True:
-            line = await process.stderr.readline()
-            if not line:
-                break
-            logger.error(f"yt-dlp stderr: {line.decode().strip()}")
-
-    stderr_task = asyncio.create_task(log_stderr())
 
     async def stream_and_cache():
         try:
@@ -210,51 +188,35 @@ async def stream_audio(query: str, request: Request):
                     yield chunk
 
             await process.wait()
-            await stderr_task
 
             if process.returncode != 0:
-                logger.error(f"yt-dlp exited with code {process.returncode}")
                 if os.path.exists(cache_path):
                     os.remove(cache_path)
-                raise HTTPException(status_code=500, detail="yt-dlp failed to extract audio")
 
-        except Exception as e:
-            logger.error(f"Stream/cache error: {e}")
+        except Exception:
             if os.path.exists(cache_path):
                 os.remove(cache_path)
-            raise HTTPException(status_code=500, detail="Stream failed")
-
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Type": "audio/mpeg",
-        "Access-Control-Allow-Origin": "https://resonate-omega.vercel.app",
-        "Access-Control-Expose-Headers": "Accept-Ranges, Content-Range, Content-Length",
-        "Cache-Control": "no-cache",
-    }
+            return
 
     return StreamingResponse(
         stream_and_cache(),
         media_type="audio/mpeg",
-        headers=headers
+        headers={"Accept-Ranges": "bytes"}
     )
 
 # -------- Spotify Routes --------
-api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
-api_router.include_router(playlists.router, prefix="/playlists", tags=["playlists"])
-api_router.include_router(search.router, prefix="/search", tags=["search"])
-api_router.include_router(library.router, prefix="/library", tags=["library"])
-api_router.include_router(playback.router, prefix="/playback", tags=["playback"])
+api_router.include_router(auth.router, prefix="/auth")
+api_router.include_router(playlists.router, prefix="/playlists")
+api_router.include_router(search.router, prefix="/search")
+api_router.include_router(library.router, prefix="/library")
+api_router.include_router(playback.router, prefix="/playback")
 
-# -------- Attach Router --------
 app.include_router(api_router)
 
-# -------- CORS (must be last!) --------
-cors_str = os.getenv("CORS_ORIGINS", "https://resonate-omega.vercel.app,http://localhost:5173,http://127.0.0.1:5173")
-origins = [origin.strip() for origin in cors_str.split(",") if origin.strip()]
-
+# -------- CORS --------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
