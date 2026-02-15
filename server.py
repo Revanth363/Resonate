@@ -37,15 +37,6 @@ app = FastAPI(title="Spotify Clone API", version="1.0.0")
 # -------- API Router --------
 api_router = APIRouter(prefix="/api")
 
-# -------- Health Models --------
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
 @api_router.get("/")
 async def root():
     return {"message": "Spotify Clone API is running"}
@@ -59,7 +50,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_cache_path(query: str) -> str:
     query_hash = hashlib.md5(query.encode("utf-8")).hexdigest()
-    return os.path.join(CACHE_DIR, f"{query_hash}.audio")
+    return os.path.join(CACHE_DIR, f"{query_hash}.m4a")
 
 def cleanup_old_cache(max_age_days=4):
     cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
@@ -84,7 +75,7 @@ async def stream_audio(query: str, request: Request):
 
     cache_path = get_cache_path(query)
 
-    # 🔥 DELETE CORRUPTED EMPTY FILE
+    # 🔥 Remove corrupted empty file
     if os.path.exists(cache_path) and os.path.getsize(cache_path) == 0:
         os.remove(cache_path)
 
@@ -121,6 +112,7 @@ async def stream_audio(query: str, request: Request):
             return StreamingResponse(
                 range_generator(),
                 status_code=206,
+                media_type="audio/mp4",
                 headers={
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
                     "Accept-Ranges": "bytes",
@@ -128,7 +120,7 @@ async def stream_audio(query: str, request: Request):
                 }
             )
 
-        return FileResponse(cache_path)
+        return FileResponse(cache_path, media_type="audio/mp4")
 
     # ================= CACHE MISS =================
     clean_query = re.sub(r"[\"'’()[\]{}]", "", query).strip()
@@ -137,7 +129,7 @@ async def stream_audio(query: str, request: Request):
     cmd = [
         "yt-dlp",
         "--cookies", "/app/cookies.txt",
-        "-f", "ba",
+        "-f", "bestaudio[ext=m4a]/bestaudio",
         "--extractor-args", "youtube:player_client=web",
         "-o", "-",
         "--quiet",
@@ -163,7 +155,7 @@ async def stream_audio(query: str, request: Request):
 
             await process.wait()
 
-            # 🔥 DELETE FILE IF FAILED OR EMPTY
+            # 🔥 Remove if failed or empty
             if process.returncode != 0 or os.path.getsize(cache_path) == 0:
                 if os.path.exists(cache_path):
                     os.remove(cache_path)
@@ -175,6 +167,7 @@ async def stream_audio(query: str, request: Request):
 
     return StreamingResponse(
         stream_and_cache(),
+        media_type="audio/mp4",
         headers={"Accept-Ranges": "bytes"}
     )
 
