@@ -46,21 +46,9 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
-# -------- Base Routes --------
 @api_router.get("/")
 async def root():
     return {"message": "Spotify Clone API is running"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status = StatusCheck(client_name=input.client_name)
-    await db.status_checks.insert_one(status.dict())
-    return status
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    docs = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**doc) for doc in docs]
 
 # ====================================================================
 # AUDIO STREAMING WITH CACHE + RANGE SUPPORT
@@ -88,26 +76,6 @@ async def on_startup():
     cleanup_old_cache(4)
     logger.info("Server started - old cache cleaned")
 
-# ========================= DEBUG ROUTE =========================
-@api_router.get("/debug-formats")
-async def debug_formats():
-    test_url = "https://youtube.com/watch?v=Q4zUoiJE478"
-
-    cmd = ["yt-dlp", "-F", test_url]
-
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-
-    stdout, stderr = await process.communicate()
-
-    return {
-        "formats": stdout.decode(),
-        "errors": stderr.decode()
-    }
-
 # ========================= STREAM ROUTE =========================
 @api_router.get("/stream")
 async def stream_audio(query: str, request: Request):
@@ -116,8 +84,12 @@ async def stream_audio(query: str, request: Request):
 
     cache_path = get_cache_path(query)
 
-    # ===== CACHE HIT =====
-    if os.path.exists(cache_path):
+    # 🔥 DELETE CORRUPTED EMPTY FILE
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) == 0:
+        os.remove(cache_path)
+
+    # ================= CACHE HIT =================
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
         file_size = os.path.getsize(cache_path)
         range_header = request.headers.get("Range")
 
@@ -127,8 +99,11 @@ async def stream_audio(query: str, request: Request):
             start = int(start_str) if start_str else 0
             end = int(end_str) if end_str else file_size - 1
 
-            if start >= file_size or end >= file_size or start > end:
-                return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+            if start >= file_size or start > end:
+                return Response(
+                    status_code=416,
+                    headers={"Content-Range": f"bytes */{file_size}"}
+                )
 
             length = end - start + 1
 
@@ -146,7 +121,6 @@ async def stream_audio(query: str, request: Request):
             return StreamingResponse(
                 range_generator(),
                 status_code=206,
-                media_type="audio/mpeg",
                 headers={
                     "Content-Range": f"bytes {start}-{end}/{file_size}",
                     "Accept-Ranges": "bytes",
@@ -154,9 +128,9 @@ async def stream_audio(query: str, request: Request):
                 }
             )
 
-        return FileResponse(cache_path, media_type="audio/mpeg")
+        return FileResponse(cache_path)
 
-    # ===== CACHE MISS =====
+    # ================= CACHE MISS =================
     clean_query = re.sub(r"[\"'’()[\]{}]", "", query).strip()
     search_query = f"ytsearch1:{clean_query}"
 
@@ -189,7 +163,8 @@ async def stream_audio(query: str, request: Request):
 
             await process.wait()
 
-            if process.returncode != 0:
+            # 🔥 DELETE FILE IF FAILED OR EMPTY
+            if process.returncode != 0 or os.path.getsize(cache_path) == 0:
                 if os.path.exists(cache_path):
                     os.remove(cache_path)
 
@@ -200,11 +175,10 @@ async def stream_audio(query: str, request: Request):
 
     return StreamingResponse(
         stream_and_cache(),
-        media_type="audio/mpeg",
         headers={"Accept-Ranges": "bytes"}
     )
 
-# -------- Spotify Routes --------
+# -------- Attach Spotify Routes --------
 api_router.include_router(auth.router, prefix="/auth")
 api_router.include_router(playlists.router, prefix="/playlists")
 api_router.include_router(search.router, prefix="/search")
